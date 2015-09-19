@@ -1,20 +1,16 @@
-{-# OPTIONS_GHC -Wall #-}
 module Main where
 
-import Control.Monad.Except (liftIO)
-import qualified Data.Map as Map
-import qualified Data.Set as Set
-import System.Exit (exitFailure)
-import System.IO (hPutStrLn, stderr)
+import qualified Elm.Compiler as Compiler
+import qualified Elm.Package as Pkg
 import GHC.Conc (getNumProcessors, setNumCapabilities)
+import qualified System.Directory as Dir
+import qualified System.Environment as Env
+import System.Exit (exitWith)
+import System.IO (hPutStrLn, stderr, stdin, stdout)
+import qualified System.Process as Proc
 
-import qualified BuildManager as BM
-import qualified Flags
-import qualified Pipeline.Compile as Compile
-import qualified Pipeline.Crawl as Crawl
-import qualified Pipeline.Plan as Plan
-import qualified Pipeline.Generate as Generate
-import TheMasterPlan (ProjectGraph(..), ProjectData(..))
+import qualified CLI.Make as Make
+import qualified CLI.Package as Package
 
 
 main :: IO ()
@@ -22,50 +18,69 @@ main =
   do  numProcessors <- getNumProcessors
       setNumCapabilities numProcessors
 
-      result <- BM.run (make numProcessors)
-      case result of
-        Right (_, timeline) ->
-          putStrLn (BM.timelineToString timeline)
+      allArgs <- Env.getArgs
+      case allArgs of
+        [] ->
+            putStrLn usageMessage
 
-        Left err ->
-          do  hPutStrLn stderr (BM.errorToString err)
-              exitFailure
+        "make" : args ->
+            error "TODO" Make.run numProcessors args
+
+        "package" : args ->
+            error "TODO" Package.run numProcessors args
+
+        command : args ->
+            attemptToRun command args
 
 
-make :: Int -> BM.Task ()
-make numProcessors =
-  do  config <- Flags.toConfig
+attemptToRun :: String -> [String] -> IO ()
+attemptToRun command args =
+  do  found <- Dir.findExecutable ("elm-" ++ command)
+      case found of
+        Nothing ->
+          hPutStrLn stderr $
+            "Could not find command `" ++ command ++ "`. Maybe there is a typo?\n\n\
+            \Default commands include:\n\n"
+            ++ availableCommands ++
+            "\nWhen you try to run the command `" ++ command ++ "` we actually search for an\n\
+            \  executable named elm-" ++ command ++ ". Are you able to run elm-" ++ command ++ "?\n\
+            \  Is it on your PATH?"
 
-      (Crawl.ProjectInfo thisPackage exposedModules moduleForGeneration projectSummary) <-
-          BM.phase "Crawl Project" (Crawl.crawl config)
+        Just path ->
+          let createProc =
+                (Proc.proc path args)
+                  { Proc.std_in  = Proc.UseHandle stdin
+                  , Proc.std_out = Proc.UseHandle stdout
+                  , Proc.std_err = Proc.UseHandle stderr
+                  }
+          in
+              do  (_, _, _, handle) <- Proc.createProcess createProc
+                  exitWith =<< Proc.waitForProcess handle
 
-      let dependencies =
-            Map.map projectDependencies (projectData projectSummary)
 
-      let modulesToDocument =
-            maybe Set.empty (const exposedModules) (BM._docs config)
+usageMessage :: String
+usageMessage =
+  "Elm Platform " ++ (Pkg.versionToString Compiler.version) ++ " - a way to run all Elm tools\n\
+  \\n\
+  \Usage: elm <command> [<args>]\n\
+  \\n\
+  \Available commands include:\n\n"
+  ++ availableCommands ++
+  "\nYou can learn more about a specific command by running things like:\n\
+  \\n\
+  \  elm make --help\n\
+  \  elm package --help\n\
+  \  elm <command> --help\n\
+  \\n\
+  \In all these cases we are simply running 'elm-<command>' so if you create an\n\
+  \executable named 'elm-foobar' you will be able to run it as 'elm foobar' as\n\
+  \long as it appears on your PATH."
 
-      buildSummary <-
-          BM.phase "Plan Build" (Plan.planBuild config modulesToDocument projectSummary)
 
-      docs <-
-        BM.phase "Compile" $ liftIO $
-          Compile.build
-            config
-            numProcessors
-            thisPackage
-            exposedModules
-            moduleForGeneration
-            dependencies
-            buildSummary
-
-      BM.phase "Generate Docs" $
-        maybe (return ()) (Generate.docs docs) (BM._docs config)
-
-      BM.phase "Generate Code" $
-        Generate.generate
-          config
-          dependencies
-          (projectNatives projectSummary)
-          moduleForGeneration
+availableCommands :: String
+availableCommands =
+  "  make      Compile an Elm file or project into JS or HTML\n\
+  \  package   Manage packages from <http://package.elm-lang.org>\n\
+  \  reactor   Develop with compile-on-refresh and time-travel debugging\n\
+  \  repl      A REPL for running individual expressions\n"
 
