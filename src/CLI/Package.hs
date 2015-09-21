@@ -4,7 +4,7 @@ import System.Directory (findExecutable)
 import System.Exit (exitFailure)
 import System.IO
 
-import Dependency.Install
+import Dependency.InstallPlan
 
 
 run :: Int -> [String] -> IO ()

@@ -2,11 +2,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Package.Description where
 
-import Prelude hiding (read)
 import Control.Applicative ((<$>))
 import Control.Arrow (first)
-import Control.Monad.Trans (MonadIO, liftIO)
-import Control.Monad.Error.Class (MonadError, throwError)
 import Control.Monad (when, mzero, forM)
 import Data.Aeson
 import Data.Aeson.Types (Parser)
@@ -14,10 +11,7 @@ import Data.Aeson.Encode.Pretty (encodePretty', defConfig, confCompare, keyOrder
 import qualified Data.ByteString.Lazy.Char8 as BS
 import qualified Data.HashMap.Strict as Map
 import qualified Data.List as List
-import qualified Data.Maybe as Maybe
 import qualified Data.Text as T
-import System.FilePath ((</>), (<.>))
-import System.Directory (doesFileExist)
 
 import qualified Dependency.Constraint as C
 import qualified Elm.Compiler.Module as Module
@@ -54,66 +48,6 @@ defaultDescription =
     , natives = False
     , dependencies = []
     }
-
-
--- READ
-
-read :: (MonadIO m, MonadError String m) => FilePath -> m Description
-read path =
-  do  json <- liftIO (BS.readFile path)
-      case eitherDecode json of
-        Left err ->
-            throwError $ "Error reading file " ++ path ++ ":\n    " ++ err
-
-        Right ds ->
-            return ds
-
-
--- WRITE
-
-write :: Description -> IO ()
-write description =
-  BS.writeFile Paths.description (prettyJSON description)
-
-
--- FIND MODULE FILE PATHS
-
-locateExposedModules :: (MonadIO m, MonadError String m) => Description -> m [(Module.Name, FilePath)]
-locateExposedModules desc =
-    mapM locate (exposed desc)
-  where
-    locate modul =
-      let path = Module.nameToPath modul <.> "elm"
-          dirs = sourceDirs desc
-      in
-      do  possibleLocations <-
-              forM dirs $ \dir -> do
-                  exists <- liftIO $ doesFileExist (dir </> path)
-                  return (if exists then Just (dir </> path) else Nothing)
-
-          case Maybe.catMaybes possibleLocations of
-            [] ->
-                throwError $
-                unlines
-                [ "Could not find exposed module '" ++ Module.nameToString modul ++ "' when looking through"
-                , "the following source directories:"
-                , concatMap ("\n    " ++) dirs
-                , ""
-                , "You may need to add a source directory to your " ++ Paths.description ++ " file."
-                ]
-
-            [location] ->
-                return (modul, location)
-
-            locations ->
-                throwError $
-                unlines
-                [ "I found more than one module named '" ++ Module.nameToString modul ++ "' in the"
-                , "following locations:"
-                , concatMap ("\n    " ++) locations
-                , ""
-                , "Module names must be unique within your package."
-                ]
 
 
 -- JSON

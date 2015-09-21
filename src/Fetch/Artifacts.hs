@@ -5,11 +5,14 @@ module Fetch.Artifacts
     , sourceCodeDownloaded
     , unzipSourceCode
     , removeSourceCode
+    , getDescription
+    , putDescription
     )
     where
 
 import qualified Codec.Archive.Zip as Zip
 import Control.Monad.Except (liftIO)
+import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as Map
 import qualified Elm.Compiler as Compiler
@@ -20,6 +23,7 @@ import System.FilePath ((</>), (<.>))
 
 import qualified Dependency.Solution as Solution
 import qualified Fetch.Artifacts.Paths as Paths
+import qualified Package.Description as Desc
 import qualified Task
 import qualified TheMasterPlan as TMP
 
@@ -79,6 +83,33 @@ unzipSourceCode name version bytes =
 removeSourceCode :: Pkg.Name -> Pkg.Version -> IO ()
 removeSourceCode name version =
     removeDirectoryRecursive (sourceCodeDir name version)
+
+
+-- DESCRIPTIONS
+
+getDescription :: Maybe (Pkg.Name, Pkg.Version) -> Task.Task Desc.Description
+getDescription maybePackage =
+  let
+    path =
+      case maybePackage of
+        Nothing ->
+            Paths.description
+
+        Just (name, vsn) ->
+            sourceCodeDir name vsn </> Paths.description
+  in
+    do  json <- liftIO (BS.readFile path)
+        case Json.eitherDecode json of
+          Left err ->
+              Task.throw $ error "TODO" $ "Error reading file " ++ path ++ ":\n    " ++ err
+
+          Right description ->
+              return description
+
+
+putDescription :: Desc.Description -> IO ()
+putDescription description =
+  BS.writeFile Paths.description (Desc.prettyJSON description)
 
 
 -- BUILD ARTIFACTS
