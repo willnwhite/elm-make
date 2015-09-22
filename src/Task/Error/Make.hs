@@ -16,7 +16,6 @@ data Error
     = BadFlags
     | CompilerErrors FilePath String [Compiler.Error]
     | CorruptedArtifact FilePath
-    | Cycle [TMP.CanonicalModule]
     | PackageProblem String
     | MissingPackage Pkg.Name
 
@@ -37,32 +36,8 @@ toString err =
           , "    Please remove the file and try again."
           ]
 
-    Cycle moduleCycle ->
-        "Your dependencies form a cycle:\n\n"
-        ++ drawCycle moduleCycle
-        ++ "\nYou may need to move some values to a new module to get rid of the cycle."
-
     PackageProblem msg ->
         msg
 
     MissingPackage name ->
         error "TODO" name
-
-
-drawCycle :: [TMP.CanonicalModule] -> String
-drawCycle modules =
-  let
-    topLine=
-        "  ┌─────┐"
-
-    line (TMP.CanonicalModule _ name) =
-        "  │    " ++ Module.nameToString name
-
-    midLine =
-        "  │     ↓"
-
-    bottomLine =
-        "  └─────┘"
-  in
-    unlines (topLine : List.intersperse midLine (map line modules) ++ [ bottomLine ])
-

@@ -1,6 +1,7 @@
 {-# OPTIONS_GHC -Wall #-}
 module Task.Error where
 
+import qualified Data.List as List
 import qualified Elm.Compiler.Module as Module
 import qualified Elm.Package as Pkg
 
@@ -20,6 +21,7 @@ data Error
         , _expectedName :: Module.Name
         , _actualName :: Module.Name
         }
+    | ImportCycle [Module.Name]
 
 
 toString :: Error -> String
@@ -58,6 +60,11 @@ toString err =
           , "Which is it?"
           ]
 
+    ImportCycle moduleCycle ->
+        "Your imports form a cycle:\n\n"
+        ++ drawCycle moduleCycle
+        ++ "\nYou may need to move some values to a new module to get rid of the cycle."
+
 
 toContext :: Maybe Module.Name -> String
 toContext maybeParent =
@@ -67,3 +74,22 @@ toContext maybeParent =
 
     Just parent ->
         " imported by module '" ++ Module.nameToString parent ++ "'"
+
+
+drawCycle :: [Module.Name] -> String
+drawCycle modules =
+  let
+    topLine=
+        "  ┌─────┐"
+
+    line name =
+        "  │    " ++ Module.nameToString name
+
+    midLine =
+        "  │     ↓"
+
+    bottomLine =
+        "  └─────┘"
+  in
+    unlines (topLine : List.intersperse midLine (map line modules) ++ [ bottomLine ])
+

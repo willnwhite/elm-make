@@ -25,53 +25,14 @@ data CanonicalModule = CanonicalModule
 type Package = (Pkg.Name, Pkg.Version)
 
 
-core :: Pkg.Name
-core =
-    Pkg.Name "elm-lang" "core"
-
-
 -- CRAWL AN INDIVIDUAL PACKGE
 
-{-| Basic information about all modules that are part of a certain package.
-We obtain this information by doing a depth first search starting with a
-file or package description.
-
-  * packageData
-      file path to module and modules depended upon
-  * packageForeignDependencies
-      any foreign modules that are needed locally and which package owns them
-
--}
-data PackageGraph = PackageGraph
-    { packageData :: Map.Map Module.Name PackageData
-    , packageNatives :: Map.Map Module.Name FilePath
-    , packageForeignDependencies :: Map.Map Module.Name Package
-    }
+type ModuleGraph = Map.Map CanonicalModule ModuleInfo
 
 
-data PackageData = PackageData
-    { packagePath :: FilePath
-    , packageDepenencies :: [Module.Name]
-    }
-
-
--- COMBINE ALL PACKAGE SUMMARIES
-
-{-| Very similar to a PackageGraph, but we now have made each module name
-unique by adding which package it comes from. This makes it safe to merge a
-bunch of PackageGraphs together, so we can write the rest of our code
-without thinking about package boundaries.
--}
-data ProjectGraph a = ProjectGraph
-    { projectData :: Map.Map CanonicalModule (ProjectData a)
-    , projectNatives :: Map.Map CanonicalModule Location
-    }
-
-
-data ProjectData a = ProjectData
-    { projectLocation :: a
-    , projectDependencies :: [CanonicalModule]
-    }
+data ModuleInfo
+    = Elm Location [CanonicalModule]
+    | JS Location
 
 
 data Location = Location
@@ -82,14 +43,15 @@ data Location = Location
 
 -- BUILD-FRIENDLY SUMMARY
 
-{-| Combines the ProjectGraph with all cached build information. At this
+{-| Combines the ModuleGraph with all cached build information. At this
 stage we crawl any cached interface files. File changes may have invalidated
 these cached interfaces, so we filter out any stale interfaces.
 
 The resulting format is very convenient for managing parallel builds.
 -}
-data BuildGraph = BuildGraph
-    { blockedModules :: Map.Map CanonicalModule BuildData
+data BuildGraph =
+  BuildGraph
+    { blockedModules :: Map.Map CanonicalModule BuildInfo
     , completedInterfaces :: Map.Map CanonicalModule Module.Interface
     }
 
@@ -103,7 +65,7 @@ We remove modules from 'blocking' as the build progresses and interfaces are
 produced. When 'blocking' is empty, it is safe to add this module to the build
 queue.
 -}
-data BuildData = BuildData
+data BuildInfo = BuildInfo
     { blocking :: [CanonicalModule]
     , location :: Location
     }
@@ -119,21 +81,21 @@ instance Binary CanonicalModule where
     do  put pkg
         put nm
 
-
-instance (Binary a) => Binary (ProjectGraph a) where
+{--
+instance Binary ModuleGraph where
   get =
-    ProjectGraph <$> get <*> get
+    ModuleGraph <$> get <*> get
 
-  put (ProjectGraph elms jss) =
+  put (ModuleGraph elms jss) =
     do  put elms
         put jss
 
 
-instance (Binary a) => Binary (ProjectData a) where
+instance Binary ModuleInfo where
   get =
-    ProjectData <$> get <*> get
+    ModuleInfo <$> get <*> get
 
-  put (ProjectData locations dependencies) =
+  put (ModuleInfo locations dependencies) =
     put locations >> put dependencies
 
 
@@ -144,3 +106,4 @@ instance Binary Location where
   put (Location relative pkg) =
     do  put relative
         put pkg
+--}

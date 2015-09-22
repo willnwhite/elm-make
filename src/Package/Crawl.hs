@@ -1,10 +1,12 @@
 {-# OPTIONS_GHC -Wall #-}
-module Package.Crawl (fromFiles, fromExposedModules) where
+module Package.Crawl (fromFiles, fromDescription) where
 
-import Control.Arrow (second)
-import Control.Monad.Except (liftIO)
+import Control.Monad (when)
+import Control.Monad.Trans (lift, liftIO)
+import qualified Control.Monad.State as State
 import qualified Data.List as List
 import qualified Data.Map as Map
+import qualified Data.Maybe as Maybe
 import qualified Elm.Compiler as Compiler
 import qualified Elm.Compiler.Module as Module
 import qualified Elm.Package as Pkg
@@ -15,19 +17,28 @@ import qualified Fetch.Artifacts as Artifacts
 import qualified Package.Description as Desc
 import qualified Dependency.Solution as S
 import qualified TheMasterPlan as TMP
-import TheMasterPlan ( PackageGraph(..), PackageData(..) )
+import TheMasterPlan ( CanonicalModule(CanonicalModule), ModuleGraph, ModuleInfo(..), Location(Location) )
 import qualified Task
 import qualified Task.Error as Error
 
 
 -- STATE and ENVIRONMENT
 
+type Explorer =
+    State.StateT ModuleGraph Task.Task
+
+
+throw :: Error.Error -> Explorer a
+throw err =
+  lift (Task.throw err)
+
+
 data Env =
   Env
-    { _packageName :: Pkg.Name
+    { _package :: TMP.Package
     , _allowNatives :: Bool
     , _sourceDirs :: [FilePath]
-    , _exposedModulesInDependencies :: Map.Map Module.Name [(Pkg.Name, Pkg.Version)]
+    , _exposedModulesInDependencies :: Map.Map Module.Name [TMP.Package]
     }
 
 
@@ -35,130 +46,126 @@ initEnv :: FilePath -> Desc.Description -> S.Solution -> Task.Task Env
 initEnv root desc solution =
   do  exposedModules <- getExposedModulesInDependencies desc solution
       return $ Env
-          { _packageName = Desc.name desc
+          { _package = (Desc.name desc, Desc.version desc)
           , _allowNatives = Desc.natives desc
           , _sourceDirs = map (root </>) (Desc.sourceDirs desc)
           , _exposedModulesInDependencies = exposedModules
           }
 
 
--- GENERIC CRAWLER
+-- GENERIC EXPLORERS
 
-fromFiles
-    :: FilePath
-    -> S.Solution
-    -> Desc.Description
-    -> [FilePath]
-    -> Task.Task ([Module.Name], PackageGraph)
+fromFiles :: FilePath -> S.Solution -> Desc.Description -> [FilePath] -> Task.Task ([CanonicalModule], ModuleGraph)
 fromFiles root solution desc filePaths =
   do  env <- initEnv root desc solution
-
-      let pkgName = Desc.name desc
-      info <- mapM (getFileInfo pkgName Nothing) filePaths
-      let names = map fst info
-      let unvisited = concatMap (snd . snd) info
-      let pkgData = Map.fromList (map (second fst) info)
-      let initialGraph = PackageGraph pkgData Map.empty Map.empty
-
-      graph <- dfs env unvisited initialGraph
-
-      return (names, graph)
+      State.runStateT (mapM (exploreFile env []) filePaths) Map.empty
 
 
-fromExposedModules
-    :: FilePath
-    -> S.Solution
-    -> Desc.Description
-    -> Task.Task PackageGraph
-fromExposedModules root solution desc =
+fromDescription :: FilePath -> S.Solution -> Desc.Description -> Task.Task ModuleGraph
+fromDescription root solution desc =
   do  env <- initEnv root desc solution
-      let unvisited = addParent Nothing (Desc.exposed desc)
-      let initialGraph = PackageGraph Map.empty Map.empty Map.empty
-      dfs env unvisited initialGraph
+      State.execStateT (mapM_ (exploreModule env []) (Desc.exposed desc)) Map.empty
 
 
--- DEPTH FIRST SEARCH
 
-dfs
-    :: Env
-    -> [(Module.Name, Maybe Module.Name)]
-    -> PackageGraph
-    -> Task.Task PackageGraph
-dfs env visitList graph =
-  case visitList of
-    [] ->
-        return graph
+-- EXPLORE A SOURCE FILE
 
-    (name, maybeParent) : remaining ->
-        if Map.member name (packageData graph) then
-            dfs env remaining graph
+exploreFile :: Env -> [Module.Name] -> FilePath -> Explorer CanonicalModule
+exploreFile env@(Env pkg _ _ _) parents filePath =
+  do  -- explore the source code
+      sourceCode <- lift $ Artifacts.getString filePath
 
-        else
-            dfsHelp env name maybeParent remaining graph
+      (givenName, givenImports) <-
+          case Compiler.parseDependencies sourceCode of
+            Right result ->
+                return result
+
+            Left msgs ->
+                throw (error "TODO") -- (Error.CompilerErrors filePath sourceCode msgs)
+
+      -- verify name
+      checkName filePath givenName (Maybe.listToMaybe parents)
+      let name = CanonicalModule pkg givenName
+
+      -- verify imports
+      let rawImports =
+            (if fst pkg == Pkg.coreName then id else (Module.defaultImports ++)) givenImports
+
+      imports <- mapM (exploreModule env (givenName : parents)) rawImports
+
+      -- inform people about the results
+      State.modify $ Map.insert name (Elm (Location filePath pkg) imports)
+      return name
 
 
-dfsHelp
-    :: Env
-    -> Module.Name
-    -> Maybe Module.Name
-    -> [(Module.Name, Maybe Module.Name)]
-    -> PackageGraph
-    -> Task.Task PackageGraph
-dfsHelp env moduleName maybeParent unvisited graph =
-  do
-      codePaths <- find env moduleName
+checkName :: FilePath -> Module.Name -> Maybe Module.Name -> Explorer ()
+checkName path givenName maybeExpectedName =
+    case maybeExpectedName of
+      Nothing ->
+          return ()
 
-      case (codePaths, Map.lookup moduleName (_exposedModulesInDependencies env)) of
-        ([Elm filePath], Nothing) ->
-            do  (name, (pkgData, newUnvisited)) <-
-                    getFileInfo (_packageName env) (Just moduleName) filePath
+      Just expectedName ->
+          if givenName == expectedName then
+              return ()
 
-                dfs env (newUnvisited ++ unvisited) $ graph {
-                    packageData = Map.insert name pkgData (packageData graph)
-                }
+          else
+              throw (Error.ModuleNameFileNameMismatch path expectedName givenName)
 
-        ([JS filePath], Nothing) ->
-            dfs env unvisited $ graph {
-                packageNatives =
-                    Map.insert moduleName filePath (packageNatives graph)
-            }
 
-        ([], Just [pkg]) ->
-            dfs env unvisited $ graph {
-                packageForeignDependencies =
-                    Map.insert moduleName pkg (packageForeignDependencies graph)
-            }
+-- EXPLORE A MODULE
 
+exploreModule :: Env -> [Module.Name] -> Module.Name -> Explorer CanonicalModule
+exploreModule env@(Env pkg _ _ exposedModules) parents moduleName =
+  do  when (elem moduleName parents) $
+          throw (Error.ImportCycle (dropWhile (/=moduleName) (reverse parents)))
+
+      codePaths <- findAllPaths env moduleName
+
+      case (codePaths, Map.lookup moduleName exposedModules) of
         ([], Nothing) ->
-            Task.throw (Error.ImportNotFound moduleName maybeParent)
+            throw (Error.ImportNotFound moduleName (Maybe.listToMaybe parents))
+
+        ([], Just [subPkg]) ->
+            return (CanonicalModule subPkg moduleName)
+
+        ([ElmPath filePath], Nothing) ->
+            exploreFile env parents filePath
+
+        ([JsPath filePath], Nothing) ->
+            do  let canonicalName = CanonicalModule pkg moduleName
+                State.modify (Map.insert canonicalName (JS (Location filePath pkg)))
+                return canonicalName
 
         (_, maybePkgs) ->
-            Task.throw $
+            throw $
               Error.ImportFoundTooMany
                 moduleName
-                maybeParent
+                (Maybe.listToMaybe parents)
                 (map toFilePath codePaths)
                 (maybe [] (map fst) maybePkgs)
 
 
--- FIND LOCAL FILE PATH
-
-data CodePath = Elm FilePath | JS FilePath
+data CodePath
+    = ElmPath FilePath
+    | JsPath FilePath
 
 
 toFilePath :: CodePath -> FilePath
 toFilePath codePath =
   case codePath of
-    Elm file -> file
-    JS file -> file
+    ElmPath file ->
+        file
+
+    JsPath file ->
+        file
 
 
-find :: Env -> Module.Name -> Task.Task [CodePath]
-find (Env _ allowNatives sourceDirs _) moduleName =
+findAllPaths :: Env -> Module.Name -> Explorer [CodePath]
+findAllPaths (Env _ allowNatives sourceDirs _) moduleName =
     findHelp allowNatives moduleName sourceDirs []
 
 
-findHelp :: Bool -> Module.Name -> [FilePath] -> [CodePath] -> Task.Task [CodePath]
+findHelp :: Bool -> Module.Name -> [FilePath] -> [CodePath] -> Explorer [CodePath]
 findHelp allowNatives moduleName sourceDirs foundPaths =
   case sourceDirs of
     [] ->
@@ -184,67 +191,18 @@ consIf bool x xs =
   if bool then x:xs else xs
 
 
-addElmPath :: FilePath -> Module.Name -> [CodePath] -> Task.Task [CodePath]
+addElmPath :: FilePath -> Module.Name -> [CodePath] -> Explorer [CodePath]
 addElmPath dir moduleName locs =
   do  let elmPath = dir </> Module.nameToPath moduleName <.> "elm"
       elmExists <- liftIO (doesFileExist elmPath)
-      return (consIf elmExists (Elm elmPath) locs)
+      return (consIf elmExists (ElmPath elmPath) locs)
 
 
-addJsPath :: FilePath -> Module.Name -> [CodePath] -> Task.Task [CodePath]
+addJsPath :: FilePath -> Module.Name -> [CodePath] -> Explorer [CodePath]
 addJsPath dir moduleName locs =
   do  let jsPath = dir </> Module.nameToPath moduleName <.> "js"
       jsExists <- liftIO (doesFileExist jsPath)
-      return (consIf jsExists (JS jsPath) locs)
-
-
-
--- GET INFO FROM A SOURCE FILE
-
-getFileInfo
-    :: Pkg.Name
-    -> Maybe Module.Name
-    -> FilePath
-    -> Task.Task (Module.Name, (PackageData, [(Module.Name, Maybe Module.Name)]))
-getFileInfo pkgName maybeName filePath =
-  do  sourceCode <- Artifacts.getString filePath
-
-      (name, rawDeps) <-
-          case Compiler.parseDependencies sourceCode of
-            Right result ->
-                return result
-
-            Left msgs ->
-                Task.throw (error "TODO") -- (Error.CompilerErrors filePath sourceCode msgs)
-
-      checkName filePath name maybeName
-
-      let deps =
-            if pkgName == TMP.core then
-                rawDeps
-            else
-                Module.defaultImports ++ rawDeps
-
-      return (name, (PackageData filePath deps, addParent (Just name) deps))
-
-
-checkName :: FilePath -> Module.Name -> Maybe Module.Name -> Task.Task ()
-checkName path nameFromSource maybeName =
-    case maybeName of
-      Nothing ->
-          return ()
-
-      Just nameFromPath ->
-          if nameFromSource == nameFromPath then
-              return ()
-
-          else
-              Task.throw (Error.ModuleNameFileNameMismatch path nameFromPath nameFromSource)
-
-
-addParent :: Maybe Module.Name -> [Module.Name] -> [(Module.Name, Maybe Module.Name)]
-addParent maybeParent names =
-    map (\name -> (name, maybeParent)) names
+      return (consIf jsExists (JsPath jsPath) locs)
 
 
 -- EXPOSED MODULES in DEPENDENCIES
@@ -252,7 +210,7 @@ addParent maybeParent names =
 getExposedModulesInDependencies
     :: Desc.Description
     -> S.Solution
-    -> Task.Task (Map.Map Module.Name [(Pkg.Name, Pkg.Version)])
+    -> Task.Task (Map.Map Module.Name [TMP.Package])
 getExposedModulesInDependencies desc solution =
   do  visibleDependencies <- allVisibleDependencies desc solution
       rawLocations <- mapM getExposedModules visibleDependencies
