@@ -5,6 +5,7 @@ import System.Exit (exitFailure)
 import System.IO
 
 import Dependency.InstallPlan
+import Package.Crawl
 
 
 run :: Int -> [String] -> IO ()

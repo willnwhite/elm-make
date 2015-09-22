@@ -7,6 +7,8 @@ module Fetch.Artifacts
     , removeSourceCode
     , getDescription
     , putDescription
+    , getString
+    , putString
     )
     where
 
@@ -15,11 +17,16 @@ import Control.Monad.Except (liftIO)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as Map
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import qualified Elm.Compiler as Compiler
 import Elm.Compiler.Module as Module
 import Elm.Package as Pkg
+import GHC.IO.Exception ( IOErrorType(InvalidArgument) )
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
 import System.FilePath ((</>), (<.>))
+import qualified System.IO as IO
+import qualified System.IO.Error as IOError
 
 import qualified Dependency.Solution as Solution
 import qualified Fetch.Artifacts.Paths as Paths
@@ -144,3 +151,54 @@ inPackage (name, version) relativePath =
 toSource :: TMP.Location -> FilePath
 toSource (TMP.Location relativePath _package) =
     relativePath
+
+
+-- GET AND PUT UTF8 FILES
+
+{-| getString converts Text to String instead of reading a String directly
+because System.IO.hGetContents is lazy, and with lazy IO, decoding exception
+cannot be caught. By using the strict Text type, we force any decoding
+exceptions to be thrown so we can show our UTF-8 message.
+-}
+getString :: FilePath -> Task.Task String
+getString name =
+  do  text <- liftIO (getText name)
+      return (Text.unpack text)
+
+
+-- TODO - this should return a Task that can fail with a nice message through
+-- the normal error reporting mechanisms.
+getText :: FilePath -> IO Text.Text
+getText name =
+  let
+    callback handle =
+      IOError.modifyIOError (convertUtf8Error name) (TextIO.hGetContents handle)
+  in
+    withFileUtf8 name IO.ReadMode callback
+
+
+convertUtf8Error :: FilePath -> IOError -> IOError
+convertUtf8Error filepath e =
+  case IOError.ioeGetErrorType e of
+    InvalidArgument ->
+        IOError.annotateIOError (userError "Bad encoding; the file must be valid UTF-8") "" Nothing (Just filepath)
+
+    _ ->
+        e
+
+
+putString :: FilePath -> String -> IO ()
+putString filePath str =
+  putText filePath (Text.pack str)
+
+
+putText :: FilePath -> Text.Text -> IO ()
+putText filePath txt =
+  withFileUtf8 filePath IO.WriteMode (\handle -> TextIO.hPutStr handle txt)
+
+
+withFileUtf8 :: FilePath -> IO.IOMode -> (IO.Handle -> IO a) -> IO a
+withFileUtf8 filePath mode callback =
+  IO.withFile filePath mode $ \handle ->
+      do  IO.hSetEncoding handle IO.utf8
+          callback handle

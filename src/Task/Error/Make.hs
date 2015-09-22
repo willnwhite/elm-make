@@ -19,18 +19,6 @@ data Error
     | Cycle [TMP.CanonicalModule]
     | PackageProblem String
     | MissingPackage Pkg.Name
-    | ModuleNotFound Module.Name (Maybe Module.Name)
-    | ModuleDuplicates
-        { _name :: Module.Name
-        , _parent :: Maybe Module.Name
-        , _local :: [FilePath]
-        , _foreign :: [Pkg.Name]
-        }
-    | ModuleName
-        { _path :: FilePath
-        , _expectedName :: Module.Name
-        , _actualName :: Module.Name
-        }
 
 
 toString :: Error -> String
@@ -59,46 +47,6 @@ toString err =
 
     MissingPackage name ->
         error "TODO" name
-
-    ModuleNotFound name maybeParent ->
-        unlines
-        [ "Error when searching for modules" ++ toContext maybeParent ++ ":"
-        , "    Could not find module '" ++ Module.nameToString name ++ "'"
-        , ""
-        , "Potential problems could be:"
-        , "  * Misspelled the module name"
-        , "  * Need to add a source directory or new dependency to " ++ Paths.description
-        ]
-
-    ModuleDuplicates name maybeParent filePaths pkgs ->
-        "Error when searching for modules" ++ toContext maybeParent ++ ".\n" ++
-        "Found multiple modules named '" ++ Module.nameToString name ++ "'\n" ++
-        "Modules with that name were found in the following locations:\n\n" ++
-        concatMap (\str -> "    " ++ str ++ "\n") (paths ++ packages)
-      where
-        packages =
-            map ("package " ++) (map Pkg.toString pkgs)
-
-        paths =
-            map ("directory " ++) filePaths
-
-    ModuleName path nameFromPath nameFromSource ->
-        unlines
-          [ "The module name is messed up for " ++ path
-          , "    According to the file's name it should be " ++ Module.nameToString nameFromPath
-          , "    According to the source code it should be " ++ Module.nameToString nameFromSource
-          , "Which is it?"
-          ]
-
-
-toContext :: Maybe Module.Name -> String
-toContext maybeParent =
-  case maybeParent of
-    Nothing ->
-        " exposed by " ++ Paths.description
-
-    Just parent ->
-        " imported by module '" ++ Module.nameToString parent ++ "'"
 
 
 drawCycle :: [TMP.CanonicalModule] -> String
