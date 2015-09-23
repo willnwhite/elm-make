@@ -14,7 +14,7 @@ import qualified Data.Map as Map
 import qualified Data.Time.Clock as Time
 import qualified Elm.Package as Pkg
 import qualified System.Directory as Dir
-import System.FilePath ((</>), (<.>))
+import System.FilePath ((</>), (<.>), dropFileName)
 import System.IO (hFileSize, withBinaryFile, IOMode(WriteMode))
 
 
@@ -155,14 +155,15 @@ versionsPath dataDir =
 
 getAvailablePackagesModificationTime :: IO (Maybe Time.UTCTime)
 getAvailablePackagesModificationTime =
-  do  dataDir <- getDataDir
-      exists <- Dir.doesFileExist (versionsPath dataDir)
+  do  path <- versionsPath <$> getDataDir
+      exists <- Dir.doesFileExist path
       if exists
         then
-          Just <$> Dir.getModificationTime (versionsPath dataDir)
+          Just <$> Dir.getModificationTime path
 
         else
-          return Nothing
+          do  Dir.createDirectoryIfMissing True (dropFileName path)
+              return Nothing
 
 
 getAvailablePackages :: IO (Map.Map Pkg.Name [Pkg.Version])
