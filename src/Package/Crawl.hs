@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -Wall #-}
 module Package.Crawl (fromFiles, fromDescription) where
 
-import Control.Monad (when)
 import Control.Monad.Trans (lift, liftIO)
 import qualified Control.Monad.State as State
 import qualified Data.List as List
@@ -22,7 +21,9 @@ import qualified Task
 import qualified Task.Error as Error
 
 
--- STATE and ENVIRONMENT
+
+-- METADATA FOR EXPLORING A PACKAGE
+
 
 type Explorer =
     State.StateT ModuleGraph Task.Task
@@ -53,7 +54,9 @@ initEnv root desc solution =
           }
 
 
+
 -- GENERIC EXPLORERS
+
 
 fromFiles :: FilePath -> S.Solution -> Desc.Description -> [FilePath] -> Task.Task ([CanonicalModule], ModuleGraph)
 fromFiles root solution desc filePaths =
@@ -69,6 +72,7 @@ fromDescription root solution desc =
 
 
 -- EXPLORE A SOURCE FILE
+
 
 exploreFile :: Env -> [Module.Name] -> FilePath -> Explorer CanonicalModule
 exploreFile env@(Env pkg _ _ _) parents filePath =
@@ -112,14 +116,29 @@ checkName path givenName maybeExpectedName =
               throw (Error.ModuleNameFileNameMismatch path expectedName givenName)
 
 
+
 -- EXPLORE A MODULE
 
-exploreModule :: Env -> [Module.Name] -> Module.Name -> Explorer CanonicalModule
-exploreModule env@(Env pkg _ _ exposedModules) parents moduleName =
-  do  when (elem moduleName parents) $
-          throw (Error.ImportCycle (dropWhile (/=moduleName) (reverse parents)))
 
-      codePaths <- findAllPaths env moduleName
+exploreModule :: Env -> [Module.Name] -> Module.Name -> Explorer CanonicalModule
+exploreModule env@(Env pkg _ _ _) parents moduleName =
+  do  moduleGraph <- State.get
+      let canonicalName = CanonicalModule pkg moduleName
+      case Map.lookup canonicalName moduleGraph of
+        Just _ ->
+            return canonicalName
+
+        Nothing ->
+            if elem moduleName parents then
+                throw (Error.ImportCycle (dropWhile (/=moduleName) (reverse parents)))
+
+            else
+                exploreModuleHelp env parents moduleName
+
+
+exploreModuleHelp :: Env -> [Module.Name] -> Module.Name -> Explorer CanonicalModule
+exploreModuleHelp env@(Env pkg _ _ exposedModules) parents moduleName =
+  do  codePaths <- findAllPaths env moduleName
 
       case (codePaths, Map.lookup moduleName exposedModules) of
         ([], Nothing) ->
@@ -143,6 +162,10 @@ exploreModule env@(Env pkg _ _ exposedModules) parents moduleName =
                 (Maybe.listToMaybe parents)
                 (map toFilePath codePaths)
                 (maybe [] (map fst) maybePkgs)
+
+
+
+-- FIND FILE PATHS
 
 
 data CodePath
@@ -205,7 +228,9 @@ addJsPath dir moduleName locs =
       return (consIf jsExists (JsPath jsPath) locs)
 
 
+
 -- EXPOSED MODULES in DEPENDENCIES
+
 
 getExposedModulesInDependencies
     :: Desc.Description
