@@ -19,12 +19,10 @@ import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import qualified Elm.Compiler as Compiler
-import Elm.Compiler.Module as Module
 import Elm.Package as Pkg
 import GHC.IO.Exception ( IOErrorType(InvalidArgument) )
 import System.Directory (doesDirectoryExist, doesFileExist, removeDirectoryRecursive)
-import System.FilePath ((</>), (<.>))
+import System.FilePath ((</>))
 import qualified System.IO as IO
 import qualified System.IO.Error as IOError
 
@@ -32,7 +30,7 @@ import qualified Dependency.Solution as Solution
 import qualified Fetch.Artifacts.Paths as Paths
 import qualified Package.Description as Desc
 import qualified Task
-import qualified TheMasterPlan as TMP
+
 
 
 -- SOLVED DEPENDENCIES
@@ -40,6 +38,7 @@ import qualified TheMasterPlan as TMP
 -- Describes the exact versions of every package used for your project. This
 -- information is written by elm-package when it solves and installs
 -- dependencies.
+
 
 solvedDependenciesPath :: FilePath
 solvedDependenciesPath =
@@ -63,7 +62,9 @@ putSolvedDependencies solution =
   BS.writeFile solvedDependenciesPath (Solution.toJson solution)
 
 
+
 -- SOURCE CODE PATHS
+
 
 packagesDirectory :: FilePath
 packagesDirectory =
@@ -92,7 +93,9 @@ removeSourceCode name version =
     removeDirectoryRecursive (sourceCodeDir name version)
 
 
+
 -- DESCRIPTIONS
+
 
 getDescription :: Maybe (Pkg.Name, Pkg.Version) -> Task.Task Desc.Description
 getDescription maybePackage =
@@ -119,41 +122,9 @@ putDescription description =
   BS.writeFile Paths.description (Desc.prettyJSON description)
 
 
--- BUILD ARTIFACTS
-
-artifactDirectory :: FilePath
-artifactDirectory =
-    Paths.stuffDirectory </> "build-artifacts" </> Pkg.versionToString Compiler.version
-
-
-toInterface :: TMP.CanonicalModule -> FilePath
-toInterface (TMP.CanonicalModule pkg name) =
-    artifactDirectory </> inPackage pkg (Module.hyphenate name <.> "elmi")
-
-
-toObjectFile :: TMP.CanonicalModule -> FilePath
-toObjectFile (TMP.CanonicalModule pkg name) =
-    artifactDirectory </> inPackage pkg (Module.hyphenate name <.> "elmo")
-
-
-toPackageCacheFile :: TMP.Package -> FilePath
-toPackageCacheFile pkg =
-    artifactDirectory </> inPackage pkg "graph.dat"
-
-
-inPackage :: TMP.Package -> FilePath -> FilePath
-inPackage (name, version) relativePath =
-    Pkg.toFilePath name </> Pkg.versionToString version </> relativePath
-
-
--- SOURCE FILES
-
-toSource :: TMP.Location -> FilePath
-toSource (TMP.Location relativePath _package) =
-    relativePath
-
 
 -- GET AND PUT UTF8 FILES
+
 
 {-| getString converts Text to String instead of reading a String directly
 because System.IO.hGetContents is lazy, and with lazy IO, decoding exception
