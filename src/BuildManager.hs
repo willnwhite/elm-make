@@ -174,6 +174,7 @@ errorToString err =
         , "Potential problems could be:"
         , "  * Misspelled the module name"
         , "  * Need to add a source directory or new dependency to " ++ Path.description
+         ++ ". See https://github.com/elm-lang/elm-package/blob/master/README.md"
         ]
 
     ModuleDuplicates name maybeParent filePaths pkgs ->
